@@ -16,7 +16,7 @@ def _convert_to_uuid(value):
 
 
 @attr.s(frozen=True)
-class Collection(object):
+class CollectionData(object):
     """
     Metadata about a blockstore collection
     """
@@ -25,7 +25,7 @@ class Collection(object):
 
 
 @attr.s(frozen=True)
-class Bundle(object):
+class BundleData(object):
     """
     Metadata about a blockstore bundle
     """
@@ -39,7 +39,7 @@ class Bundle(object):
 
 
 @attr.s(frozen=True)
-class Draft(object):
+class DraftData(object):
     """
     Metadata about a blockstore draft
     """
@@ -52,7 +52,7 @@ class Draft(object):
 
 
 @attr.s(frozen=True)
-class BundleFile(object):
+class BundleFileData(object):
     """
     Metadata about a file in a blockstore bundle or draft.
     """
@@ -63,7 +63,7 @@ class BundleFile(object):
 
 
 @attr.s(frozen=True)
-class DraftFile(BundleFile):
+class DraftFileData(BundleFileData):
     """
     Metadata about a file in a blockstore draft.
     """
@@ -71,7 +71,7 @@ class DraftFile(BundleFile):
 
 
 @attr.s(frozen=True)
-class LinkReference(object):
+class LinkReferenceData(object):
     """
     A pointer to a specific BundleVersion
     """
@@ -81,17 +81,17 @@ class LinkReference(object):
 
 
 @attr.s(frozen=True)
-class LinkDetails(object):
+class LinkDetailsData(object):
     """
     Details about a specific link in a BundleVersion or Draft
     """
     name = attr.ib(type=str)
-    direct = attr.ib(type=LinkReference)
+    direct = attr.ib(type=LinkReferenceData)
     indirect = attr.ib(type=list)  # List of LinkReference objects
 
 
 @attr.s(frozen=True)
-class DraftLinkDetails(LinkDetails):
+class DraftLinkDetailsData(LinkDetailsData):
     """
     Details about a specific link in a Draft
     """
