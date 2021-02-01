@@ -39,80 +39,94 @@ from .exceptions import (
 )
 
 
-def _data_from_collection(collection):
-    return Collection(uuid=collection.uuid, title=collection.title)
+def _collection_data_from_model(collection_model):
+    """
+    Create and return CollectionData from collection model.
+    """
+    return CollectionData(uuid=collection_model.uuid, title=collection_model.title)
+
+
+def _get_collection_model(collection_uuid):
+    """
+    Get collection model from UUID.
+
+    Raises CollectionNotFound if the collection does not exist.
+    """
+    try:
+        collection_model = models.Collection.objects.get(uuid=collection_uuid)
+    except models.Collection.DoesNotExist:
+        raise CollectionNotFound("Collection {} does not exist.".format(collection_uuid))
+    return collection_model
 
 
 def get_collection(collection_uuid):
     """
-    Retrieve metadata about the specified collection
+    Retrieve data about the specified collection.
 
-    Raises CollectionNotFound if the collection does not exist
+    Raises CollectionNotFound if collection with UUID does not exist.
     """
-    assert isinstance(collection_uuid, UUID)
-    try:
-        collection = models.Collection.objects.get(uuid=collection_uuid)
-    except models.Collection.DoesNotExist:
-        raise CollectionNotFound("Collection {} does not exist.".format(collection_uuid))
-
-    return _data_from_collection(collection)
+    collection_model = _get_collection_model(collection_uuid)
+    return _collection_data_from_model(collection_model)
 
 
 def create_collection(title):
     """
     Create a new collection.
     """
-    collection = models.Collection(
-        title=title
-    )
-    collection.save()
-
-    return _data_from_collection(collection)
+    collection_model = models.Collection(title=title)
+    collection_model.save()
+    return _collection_data_from_model(collection_model)
 
 
 def update_collection(collection_uuid, title):
     """
-    Update a collection's title
+    Update a collection's title.
     """
-    assert isinstance(collection_uuid, UUID)
-    try:
-        collection = models.Collection.objects.get(uuid=collection_uuid)
-    except models.Collection.DoesNotExist:
-        raise CollectionNotFound("Collection {} does not exist.".format(collection_uuid))
-
-    collection.title = title
-    collection.save()
-    return _data_from_collection(collection)
+    collection_model = _get_collection_model(collection_uuid)
+    collection_model.title = title
+    collection_model.save()
+    return _collection_data_from_model(collection_model)
 
 
 def delete_collection(collection_uuid):
     """
-    Delete a collection
+    Delete a collection.
     """
-    assert isinstance(collection_uuid, UUID)
-    try:
-        collection = models.Collection.objects.get(uuid=collection_uuid)
-    except models.Collection.DoesNotExist:
-        raise CollectionNotFound("Collection {} does not exist.".format(collection_uuid))
-
-    collection.delete()
+    collection_model = _get_collection_model(collection_uuid)
+    collection_model.delete()
 
 
-def _data_from_bundle(bundle):
-    latest_bundle_version = bundle.get_bundle_version()
-    return Bundle(
-        uuid=bundle.uuid,
-        title=bundle.title,
-        description=bundle.description,
-        slug=bundle.slug,
-        drafts={draft.name: draft.uuid for draft in bundle.drafts.all()},
-        latest_version=latest_bundle_version.version_num if latest_bundle_version else 0,
+def _bundle_data_from_model(bundle_model):
+    """
+    Create and return BundleData from bundle model.
+    """
+    latest_bundle_version_model = bundle_model.get_bundle_version()
+    return BundleData(
+        uuid=bundle_model.uuid,
+        title=bundle_model.title,
+        description=bundle_model.description,
+        slug=bundle_model.slug,
+        drafts={draft.name: draft.uuid for draft in bundle_model.drafts.all()},
+        latest_version=latest_bundle_version_model.version_num if latest_bundle_version_model else 0,
     )
+
+
+def _get_bundle_model(bundle_uuid):
+    """
+    Get Bundle model from UUID.
+
+    Raises BundleNotFound if bundle with UUID does not exist.
+    """
+    try:
+        bundle_model = models.Bundle.objects.get(uuid=bundle_uuid)
+    except models.Bundle.DoesNotExist:
+        raise BundleNotFound("Bundle {} does not exist.".format(bundle_uuid))
+    return bundle_model
 
 
 def get_bundles(uuids=None, text_search=None):
     """
-    Get the details of all bundles
+    Get the details of all bundles.
     """
     query_params = {}
     if uuids:
@@ -127,17 +141,12 @@ def get_bundles(uuids=None, text_search=None):
 
 def get_bundle(bundle_uuid):
     """
-    Retrieve metadata about the specified bundle
+    Retrieve data about the specified bundle.
 
-    Raises BundleNotFound if the bundle does not exist
+    Raises BundleNotFound if bundle with UUID does not exist.
     """
-    assert isinstance(bundle_uuid, UUID)
-    try:
-        bundle = models.Bundle.objects.get(uuid=bundle_uuid)
-    except models.Bundle.DoesNotExist:
-        raise BundleNotFound("Bundle {} does not exist.".format(bundle_uuid))
-
-    return _data_from_bundle(bundle)
+    bundle_model = _get_bundle_model(bundle_uuid)
+    return _bundle_data_from_model(bundle_model)
 
 
 def create_bundle(collection_uuid, slug, title="New Bundle", description=""):
@@ -146,83 +155,64 @@ def create_bundle(collection_uuid, slug, title="New Bundle", description=""):
 
     Note that description is currently required.
     """
-    assert isinstance(collection_uuid, UUID)
-    try:
-        collection = models.Collection.objects.get(uuid=collection_uuid)
-    except models.Collection.DoesNotExist:
-        raise CollectionNotFound("Collection {} does not exist.".format(collection_uuid))
-
-    bundle = models.Bundle(
+    collection_model = _get_collection_model(collection_uuid)
+    bundle_model = models.Bundle(
         title=title,
-        collection=collection,
+        collection=collection_model,
         slug=slug,
         description=description,
     )
-    bundle.save()
-    return _data_from_bundle(bundle)
+    bundle_model.save()
+    return _bundle_data_from_model(bundle_model)
 
 
 def update_bundle(bundle_uuid, **fields):
     """
     Update a bundle's title, description, slug, or collection.
     """
-    assert isinstance(bundle_uuid, UUID)
-    try:
-        bundle = models.Bundle.objects.get(uuid=bundle_uuid)
-    except models.Bundle.DoesNotExist:
-        raise BundleNotFound("Bundle {} does not exist.".format(bundle_uuid))
-
+    bundle_model = _get_bundle_model(bundle_uuid)
     data = {}
-    # Most validation will be done by Blockstore, so we don't worry too much about data validation
+    # TODO: Add validation.
     for str_field in ("title", "description", "slug"):
         if str_field in fields:
-            setattr(bundle, str_field, fields.pop(str_field))
+            setattr(bundle_model, str_field, fields.pop(str_field))
     if "collection_uuid" in fields:
-        collection_uuid = str(fields.pop("collection_uuid"))
-        assert isinstance(collection_uuid, UUID)
-        try:
-            collection = models.Collection.objects.get(uuid=collection_uuid)
-        except models.Collection.DoesNotExist:
-            raise CollectionNotFound("Collection {} does not exist.".format(collection_uuid))
-        bundle.collection = collection
+        collection_uuid = fields.pop("collection_uuid")
+        collection_model = _get_collection_model(collection_uuid)
+        bundle_model.collection = collection_model
     if fields:
         raise ValueError("Unexpected extra fields passed to update_bundle: {}".format(fields.keys()))
 
-    bundle.save()
-    return _data_from_bundle(bundle)
+    bundle_model.save()
+    return _bundle_data_from_model(bundle_model)
 
 
 def delete_bundle(bundle_uuid):
     """
-    Delete a bundle
+    Delete a bundle.
     """
-    assert isinstance(bundle_uuid, UUID)
-    try:
-        bundle = models.Bundle.objects.get(uuid=bundle_uuid)
-    except models.Bundle.DoesNotExist:
-        raise BundleNotFound("Bundle {} does not exist.".format(bundle_uuid))
-    bundle.delete()
+    bundle_model = _get_bundle_model(bundle_uuid)
+    bundle_model.delete()
 
 
-def _data_from_draft(draft):
+def _draft_data_from_model(draft_model):
     """
-    Given data about a Draft returned by any blockstore REST API, convert it to
-    a Draft instance.
+    Create and return DraftData from draft model.
     """
-    return Draft(
-        uuid=draft.uuid,
-        bundle_uuid=draft.bundle.uuid,
-        name=draft.name,
-        updated_at=draft.staged_draft.updated_at,
+    return DraftData(
+        uuid=draft_model.uuid,
+        bundle_uuid=draft_model.bundle.uuid,
+        name=draft_model.name,
+        updated_at=draft_model.staged_draft.updated_at,
         files={
-            path: DraftFile(
+            path: DraftFileData(
                 path=path,
                 size=file_info.size,
                 url=path,  ## Todo
                 hash_digest=file_info.hash_digest,
                 modified=path in draft.staged_draft.files_to_overwrite,
             )
-            for path, file_info in draft.staged_draft.files.items()
+            for path, file_info in draft_model.staged_draft.files.items()
         },
         links={}
         # Todo
@@ -238,41 +228,44 @@ def _data_from_draft(draft):
     )
 
 
-def get_draft(draft_uuid):
+def _get_draft_model(draft_uuid):
     """
-    Retrieve metadata about the specified draft.
-    If you don't know the draft's UUID, look it up using get_bundle()
+    Get Draft model from UUID.
+
+    Raises DraftNotFound if draft with UUID does not exist.
     """
-    assert isinstance(draft_uuid, UUID)
     try:
-        draft = models.Draft.objects.get(uuid=draft_uuid)
+        draft_model = models.Draft.objects.get(uuid=draft_uuid)
     except models.Draft.DoesNotExist:
         raise DraftNotFound("Draft does not exist: {}".format(draft_uuid))
+    return draft_model
 
-    return _data_from_draft(draft)
+
+def get_draft(draft_uuid):
+    """
+    Retrieve data about the specified draft.
+
+    If you don't know the draft's UUID, look it up using get_bundle()
+    """
+    draft_model = _get_draft_model(draft_uuid)
+    return _draft_data_from_model(draft_model)
 
 
 def get_or_create_bundle_draft(bundle_uuid, draft_name):
     """
-    Retrieve metadata about the specified draft.
+    Retrieve data about the specified draft, creating a new one if it does not exist yet.
     """
-    assert isinstance(bundle_uuid, UUID)
     try:
-        bundle = models.Bundle.objects.get(uuid=bundle_uuid)
-    except models.Bundle.DoesNotExist:
-        raise BundleNotFound("Bundle {} does not exist.".format(bundle_uuid))
-
-    try:
-        draft = models.Draft.objects.get(bundle=bundle, name=draft_name)
+        draft_model = models.Draft.objects.get(bundle__uuid=bundle_uuid, name=draft_name)
     except models.Draft.DoesNotExist:
         # The draft doesn't exist yet, so create it:
-        draft = models.Draft(
-            bundle=bundle,
+        bundle_model = _get_bundle_model(bundle_uuid)
+        draft_model = models.Draft(
+            bundle=bundle_model,
             name=draft_name,
         )
-        draft.save()
-
-    return _data_from_draft(draft)
+        draft_model.save()
+    return _draft_data_from_model(draft_model)
 
 
 def commit_draft(draft_uuid):
@@ -282,7 +275,19 @@ def commit_draft(draft_uuid):
 
     Does not return any value.
     """
-    api_request('post', api_url('drafts', str(draft_uuid), 'commit'))
+    draft_repo = DraftRepo(SnapshotRepo())
+    staged_draft = draft_repo.get(draft_uuid)
+
+    # TODO: Is this the appropriate response when trying to commit a Draft with
+    # no changes?
+    if not staged_draft.files_to_overwrite and not staged_draft.links_to_overwrite:
+        raise serializers.ValidationError("Draft has no changes to commit.")
+
+    new_snapshot, _updated_draft = draft_repo.commit(staged_draft)
+    new_bundle_version = models.BundleVersion.create_new_version(
+        new_snapshot.bundle_uuid, new_snapshot.hash_digest
+    )
+    return new_bundle_version
 
 
 def delete_draft(draft_uuid):
@@ -291,44 +296,89 @@ def delete_draft(draft_uuid):
 
     Does not return any value.
     """
-    api_request('delete', api_url('drafts', str(draft_uuid)))
+    draft_repo = DraftRepo(SnapshotRepo())
+    draft_repo.delete(draft_uuid)
+    draft_model = _get_draft_model(draft_uuid)
+    draft_model.delete()
 
 
-def get_bundle_version(bundle_uuid, version_number):
+def _get_bundle_version_model(bundle_uuid, version_number=None):
+    """
+    Get BundleVersion from bundle UUID and version number.
+
+    If version_number is None, returns the latest bundle version of the bundle.
+    """
+    return models.BundleVersion.get_bundle_version(bundle_uuid=bundle_uuid, version_num=version_number)
+
+
+def _bundle_version_data_from_model(draft):
+    """
+    :param draft:
+    :return:
+    """
+    snapshot = bundle_version_model.snapshot()
+    snapshot_repo = SnapshotRepo()
+
+    # TODO
+
+    files = (
+        BundleFileData(
+            path=path,
+            url=snapshot_repo.url(snapshot, path),
+            size=file_info.size,
+            hash_digest=file_info.hash_digest.hex(),
+        ) for path, file_metadata in snapshot.files.items()
+    )
+
+    # info['links'] = {
+    #     link.name: {
+    #         "direct": self._serialized_dep(link.direct_dependency),
+    #         "indirect": [
+    #             self._serialized_dep(dep)
+    #             for dep in link.indirect_dependencies
+    #         ]
+    #     }
+    #     for link in snapshot.links
+    # }
+
+    return {
+        link.name: LinkDetailsData(
+            name=link.name,
+            direct=LinkReferenceData(**link["direct"]),
+            indirect=[LinkReferenceData(**ind) for ind in link["indirect"]],
+        )
+        for link in snapshot.links
+
+    }
+    # return BundleVersionWithFileDataSerializer
+
+
+def get_bundle_version(bundle_uuid, version_number): ### ??
     """
     Get the details of the specified bundle version
     """
-    if version_number == 0:
-        return None
-    version_url = api_url('bundle_versions', str(bundle_uuid) + ',' + str(version_number))
-    return api_request('get', version_url)
+    bundle_version_model = _get_bundle_version_model(bundle_uuid, version_number)
+    if bundle_version_model is None:
+        pass
 
-
-def get_bundle_version_files(bundle_uuid, version_number):
+def get_bundle_version_files(bundle_uuid, version_number=None):
     """
     Get a list of the files in the specified bundle version
     """
-    if version_number == 0:
-        return []
-    version_info = get_bundle_version(bundle_uuid, version_number)
-    return [BundleFile(path=path, **file_metadata) for path, file_metadata in version_info["snapshot"]["files"].items()]
+    bundle_version_model = _get_bundle_version_model(bundle_uuid, version_number)
+    if bundle_version_model is None:
+        return ()
+    return _bundle_version_data_from_model(bundle_version_model).files
 
 
-def get_bundle_version_links(bundle_uuid, version_number):
+def get_bundle_version_links(bundle_uuid, version_number=None):
     """
     Get a dictionary of the links in the specified bundle version
     """
-    if version_number == 0:
+    bundle_version_model = _get_bundle_version_model(bundle_uuid, version_number)
+    if bundle_version_model is None:
         return {}
-    version_info = get_bundle_version(bundle_uuid, version_number)
-    return {
-        name: LinkDetails(
-            name=name,
-            direct=LinkReference(**link["direct"]),
-            indirect=[LinkReference(**ind) for ind in link["indirect"]],
-        )
-        for name, link in version_info['snapshot']['links'].items()
-    }
+    return _bundle_version_data_from_model(bundle_version_model).links
 
 
 def get_bundle_files_dict(bundle_uuid, use_draft=None):
@@ -336,17 +386,16 @@ def get_bundle_files_dict(bundle_uuid, use_draft=None):
     Get a dict of all the files in the specified bundle.
 
     Returns a dict where the keys are the paths (strings) and the values are
-    BundleFile or DraftFile tuples.
+    BundleFileData or DraftFileData tuples.
     """
-    bundle = get_bundle(bundle_uuid)
-    if use_draft and use_draft in bundle.drafts:  # pylint: disable=unsupported-membership-test
-        draft_uuid = bundle.drafts[use_draft]  # pylint: disable=unsubscriptable-object
-        return get_draft(draft_uuid).files
-    elif not bundle.latest_version:
-        # This bundle has no versions so definitely does not contain any files
-        return {}
-    else:
-        return {file_meta.path: file_meta for file_meta in get_bundle_version_files(bundle_uuid, bundle.latest_version)}
+    if use_draft:
+        try:
+            draft_model = models.Draft.objects.get(bundle__uuid=bundle_uuid, name=use_draft)
+        except models.Draft.DoesNotExist:
+            raise DraftNotFound("Draft for Bundle {} with name {} does not exist.".format(bundle_uuid, use_draft))
+        return _draft_data_from_model(draft_model).files
+
+    return {file_meta.path: file_meta for file_meta in get_bundle_version_files(bundle_uuid)}
 
 
 def get_bundle_files(bundle_uuid, use_draft=None):
@@ -363,22 +412,20 @@ def get_bundle_links(bundle_uuid, use_draft=None):
     Returns a dict where the keys are the link names (strings) and the values
     are LinkDetails or DraftLinkDetails tuples.
     """
-    bundle = get_bundle(bundle_uuid)
-    if use_draft and use_draft in bundle.drafts:  # pylint: disable=unsupported-membership-test
-        draft_uuid = bundle.drafts[use_draft]  # pylint: disable=unsubscriptable-object
-        return get_draft(draft_uuid).links
-    elif not bundle.latest_version:
-        # This bundle has no versions so definitely does not contain any links
-        return {}
-    else:
-        return get_bundle_version_links(bundle_uuid, bundle.latest_version)
+    if use_draft:
+        try:
+            draft_model = models.Draft.objects.get(bundle__uuid=bundle_uuid, name=use_draft)
+        except models.Draft.DoesNotExist:
+            raise DraftNotFound("Draft for Bundle {} with name {} does not exist.".format(bundle_uuid, use_draft))
+        return _draft_data_from_model(draft_model).links
+
+    return get_bundle_version_links(bundle_uuid)
 
 
 def get_bundle_file_metadata(bundle_uuid, path, use_draft=None):
     """
     Get the metadata of the specified file.
     """
-    assert isinstance(bundle_uuid, UUID)
     files_dict = get_bundle_files_dict(bundle_uuid, use_draft=use_draft)
     try:
         return files_dict[path]
