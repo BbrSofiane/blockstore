@@ -8,6 +8,8 @@ from uuid import UUID
 import attr
 import six
 
+from blockstore.apps.bundles.links import Dependency
+
 
 def _convert_to_uuid(value):
     if not isinstance(value, UUID):
@@ -39,6 +41,19 @@ class BundleData(object):
 
 
 @attr.s(frozen=True)
+class BundleVersionData(object):
+    """
+    Metadata about a blockstore bundle version.
+    """
+    bundle_uuid = attr.ib(type=UUID, converter=_convert_to_uuid)
+    version = attr.ib(type=int, validator=attr.validators.instance_of(int))
+    change_description = attr.ib(type=six.text_type)
+    created_at = attr.ib(type=datetime, validator=attr.validators.instance_of(datetime))
+    files = attr.ib(type=dict)
+    links = attr.ib(type=dict)
+
+
+@attr.s(frozen=True)
 class DraftData(object):
     """
     Metadata about a blockstore draft
@@ -46,6 +61,7 @@ class DraftData(object):
     uuid = attr.ib(type=UUID, converter=_convert_to_uuid)
     bundle_uuid = attr.ib(type=UUID, converter=_convert_to_uuid)
     name = attr.ib(type=six.text_type)
+    created_at = attr.ib(type=datetime, validator=attr.validators.instance_of(datetime))
     updated_at = attr.ib(type=datetime, validator=attr.validators.instance_of(datetime))
     files = attr.ib(type=dict)
     links = attr.ib(type=dict)
@@ -71,27 +87,17 @@ class DraftFileData(BundleFileData):
 
 
 @attr.s(frozen=True)
-class LinkReferenceData(object):
-    """
-    A pointer to a specific BundleVersion
-    """
-    bundle_uuid = attr.ib(type=UUID, converter=_convert_to_uuid)
-    version = attr.ib(type=int)
-    snapshot_digest = attr.ib(type=six.text_type)
-
-
-@attr.s(frozen=True)
-class LinkDetailsData(object):
+class BundleLinkData(object):
     """
     Details about a specific link in a BundleVersion or Draft
     """
     name = attr.ib(type=str)
-    direct = attr.ib(type=LinkReferenceData)
-    indirect = attr.ib(type=list)  # List of LinkReference objects
+    direct_dependency = attr.ib(type=Dependency)
+    indirect_dependencies = attr.ib(type=list)  # List of Dependency objects
 
 
 @attr.s(frozen=True)
-class DraftLinkDetailsData(LinkDetailsData):
+class DraftLinkData(BundleLinkData):
     """
     Details about a specific link in a Draft
     """

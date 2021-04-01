@@ -9,7 +9,6 @@ from uuid import UUID
 import dateutil.parser
 from django.core.exceptions import ImproperlyConfigured
 import requests
-import six
 
 from blockstore.apps.bundles import models
 from blockstore.apps.bundles.links import LinkCycleError
@@ -22,19 +21,21 @@ from blockstore.apps.rest_api.v1.serializers.drafts import (
 
 from .data import (
     BundleData,
+    BundleVersionData,
     CollectionData,
     DraftData,
     BundleFileData,
     DraftFileData,
-    LinkDetailsData,
-    LinkReferenceData,
-    DraftLinkDetailsData,
+    BundleLinkData,
+    DraftLinkData,
 )
 from .exceptions import (
     NotFound,
     CollectionNotFound,
     BundleNotFound,
+    BundleVersionNotFound,
     DraftNotFound,
+    DraftHasNoChangesToCommit,
     BundleFileNotFound,
 )
 
@@ -128,15 +129,14 @@ def get_bundles(uuids=None, text_search=None):
     """
     Get the details of all bundles.
     """
-    query_params = {}
+    bundles_queryset = models.Bundle.objects.all()
     if uuids:
-        query_params['uuid'] = ','.join(map(str, uuids))
+        bundles_queryset = bundles_queryset.filter(uuid__in=uuids)
     if text_search:
-        query_params['text_search'] = text_search
-    version_url = api_url('bundles') + '?' + urlencode(query_params)
-    response = api_request('get', version_url)
-    # build bundle from response, convert map object to list and return
-    return [_bundle_from_response(item) for item in response]
+        bundles_queryset = bundles_queryset.filter(
+            Q(title__icontains=text_search) | Q(description__icontains=text_search) | Q(slug__icontains=text_search)
+        )
+    return [_bundle_data_from_model(bundle_model) for bundle_model in bundles_queryset]
 
 
 def get_bundle(bundle_uuid):
@@ -171,8 +171,6 @@ def update_bundle(bundle_uuid, **fields):
     Update a bundle's title, description, slug, or collection.
     """
     bundle_model = _get_bundle_model(bundle_uuid)
-    data = {}
-    # TODO: Add validation.
     for str_field in ("title", "description", "slug"):
         if str_field in fields:
             setattr(bundle_model, str_field, fields.pop(str_field))
@@ -199,32 +197,34 @@ def _draft_data_from_model(draft_model):
     """
     Create and return DraftData from draft model.
     """
+    draft_repo = DraftRepo(SnapshotRepo())
+    staged_draft = draft_model.staged_draft
+
     return DraftData(
         uuid=draft_model.uuid,
         bundle_uuid=draft_model.bundle.uuid,
         name=draft_model.name,
+        created_at=draft_model.staged_draft.created_at,
         updated_at=draft_model.staged_draft.updated_at,
         files={
             path: DraftFileData(
                 path=path,
                 size=file_info.size,
-                url=path,  ## Todo
+                url=draft_repo.url(staged_draft, path),  # TODO
                 hash_digest=file_info.hash_digest,
-                modified=path in draft.staged_draft.files_to_overwrite,
+                modified=path in draft_model.staged_draft.files_to_overwrite,
             )
-            for path, file_info in draft_model.staged_draft.files.items()
+            for path, file_info in staged_draft.files.items()
         },
-        links={}
-        # Todo
-        # links={
-        #     name: DraftLinkDetails(
-        #         name=name,
-        #         direct=LinkReference(**link["direct"]),
-        #         indirect=[LinkReference(**ind) for ind in link["indirect"]],
-        #         modified=link["modified"],
-        #     )
-        #     for name, link in draft.staged_draft.composed_links.items()
-        # }
+        links={
+            link.name: DraftLinkData(
+                name=link.name,
+                direct_dependency=link.direct_dependency,
+                indirect_dependencies=link.indirect_dependencies,
+                modified=link.name in staged_draft.links_to_overwrite.modified_set,
+            )
+            for link in staged_draft.composed_links()
+        }
     )
 
 
@@ -237,7 +237,7 @@ def _get_draft_model(draft_uuid):
     try:
         draft_model = models.Draft.objects.get(uuid=draft_uuid)
     except models.Draft.DoesNotExist:
-        raise DraftNotFound("Draft does not exist: {}".format(draft_uuid))
+        raise DraftNotFound("Draft {} does not exist.".format(draft_uuid))
     return draft_model
 
 
@@ -251,14 +251,13 @@ def get_draft(draft_uuid):
     return _draft_data_from_model(draft_model)
 
 
-def get_or_create_bundle_draft(bundle_uuid, draft_name):
+def get_or_create_draft(bundle_uuid, draft_name):
     """
     Retrieve data about the specified draft, creating a new one if it does not exist yet.
     """
     try:
         draft_model = models.Draft.objects.get(bundle__uuid=bundle_uuid, name=draft_name)
     except models.Draft.DoesNotExist:
-        # The draft doesn't exist yet, so create it:
         bundle_model = _get_bundle_model(bundle_uuid)
         draft_model = models.Draft(
             bundle=bundle_model,
@@ -278,16 +277,13 @@ def commit_draft(draft_uuid):
     draft_repo = DraftRepo(SnapshotRepo())
     staged_draft = draft_repo.get(draft_uuid)
 
-    # TODO: Is this the appropriate response when trying to commit a Draft with
-    # no changes?
     if not staged_draft.files_to_overwrite and not staged_draft.links_to_overwrite:
-        raise serializers.ValidationError("Draft has no changes to commit.")
+        raise DraftHasNoChangesToCommit("Draft {} does not have any changes to commit.".format(draft_uuid))
 
     new_snapshot, _updated_draft = draft_repo.commit(staged_draft)
     new_bundle_version = models.BundleVersion.create_new_version(
         new_snapshot.bundle_uuid, new_snapshot.hash_digest
     )
-    return new_bundle_version
 
 
 def delete_draft(draft_uuid):
@@ -296,10 +292,41 @@ def delete_draft(draft_uuid):
 
     Does not return any value.
     """
+    draft_model = _get_draft_model(draft_uuid)
     draft_repo = DraftRepo(SnapshotRepo())
     draft_repo.delete(draft_uuid)
-    draft_model = _get_draft_model(draft_uuid)
     draft_model.delete()
+
+
+def _bundle_version_data_from_model(bundle_version_model):  # TODO
+    """
+    Create and return BundleVersionData from bundle version model.
+    """
+    snapshot = bundle_version_model.snapshot()
+    snapshot_repo = SnapshotRepo()
+
+    return BundleVersionData(
+        bundle_uuid=bundle_version_model.bundle.uuid,
+        version=bundle_version_model.version_num,
+        change_description=bundle_version_model.change_description,
+        created_at=snapshot.created_at,
+        files={
+            path: BundleFileData(
+                path=path,
+                url=snapshot_repo.url(snapshot, path),
+                size=file_info.size,
+                hash_digest=file_info.hash_digest.hex(),
+            ) for path, file_info in snapshot.files.items()
+        },
+        links={
+            link.name: BundleLinkData(
+                name=link.name,
+                direct_dependency=link.direct_dependency,
+                indirect_dependencies=link.indirect_dependencies,
+            )
+            for link in snapshot.links
+        },
+    )
 
 
 def _get_bundle_version_model(bundle_uuid, version_number=None):
@@ -308,80 +335,27 @@ def _get_bundle_version_model(bundle_uuid, version_number=None):
 
     If version_number is None, returns the latest bundle version of the bundle.
     """
-    return models.BundleVersion.get_bundle_version(bundle_uuid=bundle_uuid, version_num=version_number)
-
-
-def _bundle_version_data_from_model(draft):
-    """
-    :param draft:
-    :return:
-    """
-    snapshot = bundle_version_model.snapshot()
-    snapshot_repo = SnapshotRepo()
-
-    # TODO
-
-    files = (
-        BundleFileData(
-            path=path,
-            url=snapshot_repo.url(snapshot, path),
-            size=file_info.size,
-            hash_digest=file_info.hash_digest.hex(),
-        ) for path, file_metadata in snapshot.files.items()
-    )
-
-    # info['links'] = {
-    #     link.name: {
-    #         "direct": self._serialized_dep(link.direct_dependency),
-    #         "indirect": [
-    #             self._serialized_dep(dep)
-    #             for dep in link.indirect_dependencies
-    #         ]
-    #     }
-    #     for link in snapshot.links
-    # }
-
-    return {
-        link.name: LinkDetailsData(
-            name=link.name,
-            direct=LinkReferenceData(**link["direct"]),
-            indirect=[LinkReferenceData(**ind) for ind in link["indirect"]],
-        )
-        for link in snapshot.links
-
+    filter_kwargs = {
+        'bundle__uuid': bundle_uuid
     }
-    # return BundleVersionWithFileDataSerializer
+    if version_number:
+        filter_kwargs['version_num'] = version_num
+
+    bundle_version_model = models.BundleVersion.objects.filter(**filter_kwargs).order_by('-version_num').first()
+    if bundle_version_model is None:
+        raise BundleVersionNotFound("Bundle Version {},{} does not exist.".format(bundle_uuid, version_number))
+    return bundle_version_model
 
 
-def get_bundle_version(bundle_uuid, version_number): ### ??
+def get_bundle_version(bundle_uuid, version_number=None):
     """
     Get the details of the specified bundle version
     """
     bundle_version_model = _get_bundle_version_model(bundle_uuid, version_number)
-    if bundle_version_model is None:
-        pass
-
-def get_bundle_version_files(bundle_uuid, version_number=None):
-    """
-    Get a list of the files in the specified bundle version
-    """
-    bundle_version_model = _get_bundle_version_model(bundle_uuid, version_number)
-    if bundle_version_model is None:
-        return ()
-    return _bundle_version_data_from_model(bundle_version_model).files
+    return _bundle_version_data_from_model(bundle_version_model)
 
 
-def get_bundle_version_links(bundle_uuid, version_number=None):
-    """
-    Get a dictionary of the links in the specified bundle version
-    """
-    bundle_version_model = _get_bundle_version_model(bundle_uuid, version_number)
-    if bundle_version_model is None:
-        return {}
-    return _bundle_version_data_from_model(bundle_version_model).links
-
-
-def get_bundle_files_dict(bundle_uuid, use_draft=None):
+def get_bundle_files(bundle_uuid, use_draft=None):
     """
     Get a dict of all the files in the specified bundle.
 
@@ -392,17 +366,11 @@ def get_bundle_files_dict(bundle_uuid, use_draft=None):
         try:
             draft_model = models.Draft.objects.get(bundle__uuid=bundle_uuid, name=use_draft)
         except models.Draft.DoesNotExist:
-            raise DraftNotFound("Draft for Bundle {} with name {} does not exist.".format(bundle_uuid, use_draft))
-        return _draft_data_from_model(draft_model).files
+            pass
+        else:
+            return _draft_data_from_model(draft_model).files
 
-    return {file_meta.path: file_meta for file_meta in get_bundle_version_files(bundle_uuid)}
-
-
-def get_bundle_files(bundle_uuid, use_draft=None):
-    """
-    Get an iterator over all the files in the specified bundle or draft.
-    """
-    return get_bundle_files_dict(bundle_uuid, use_draft).values()
+    return get_bundle_version(bundle_uuid).files
 
 
 def get_bundle_links(bundle_uuid, use_draft=None):
@@ -416,17 +384,18 @@ def get_bundle_links(bundle_uuid, use_draft=None):
         try:
             draft_model = models.Draft.objects.get(bundle__uuid=bundle_uuid, name=use_draft)
         except models.Draft.DoesNotExist:
-            raise DraftNotFound("Draft for Bundle {} with name {} does not exist.".format(bundle_uuid, use_draft))
-        return _draft_data_from_model(draft_model).links
+            pass
+        else:
+            return _draft_data_from_model(draft_model).links
 
-    return get_bundle_version_links(bundle_uuid)
+    return get_bundle_version(bundle_uuid).links
 
 
 def get_bundle_file_metadata(bundle_uuid, path, use_draft=None):
     """
     Get the metadata of the specified file.
     """
-    files_dict = get_bundle_files_dict(bundle_uuid, use_draft=use_draft)
+    files_dict = get_bundle_files(bundle_uuid, use_draft=use_draft)
     try:
         return files_dict[path]
     except KeyError:
@@ -442,9 +411,24 @@ def get_bundle_file_data(bundle_uuid, path, use_draft=None):
 
     Do not use this for large files!
     """
-    metadata = get_bundle_file_metadata(bundle_uuid, path, use_draft)
-    with requests.get(metadata.url, stream=True) as r:
-        return r.content
+
+    if use_draft:
+        try:
+            draft_model = models.Draft.objects.get(bundle__uuid=bundle_uuid, name=use_draft)
+        except models.Draft.DoesNotExist:
+            pass
+        else:
+            draft_repo = DraftRepo(SnapshotRepo())
+            staged_draft = draft_model.staged_draft
+            with draft_repo.open(staged_draft, path) as file:
+                return file.read()
+
+    bundle_version_model = _get_bundle_version_model(bundle_uuid)
+
+    snapshot_repo = SnapshotRepo()
+    snapshot = bundle_version_model.snapshot()
+    with snapshot_repo.open(snapshot, path) as file:
+        return file.read()
 
 
 def write_draft_file(draft_uuid, path, contents):
@@ -459,7 +443,7 @@ def write_draft_file(draft_uuid, path, contents):
     """
     data = {
         'files': {
-            path: encode_str_for_draft(contents) if contents is not None else None,
+            path: _encode_str_for_draft(contents) if contents is not None else None,
         },
     }
     serializer = DraftFileUpdateSerializer(data=data)
@@ -485,18 +469,28 @@ def set_draft_link(draft_uuid, link_name, bundle_uuid, version):
 
     Does not return anything.
     """
-    api_request('patch', api_url('drafts', str(draft_uuid)), json={
+    data = {
         'links': {
             link_name: {"bundle_uuid": str(bundle_uuid), "version": version} if bundle_uuid is not None else None,
         },
-    })
+    }
+    serializer = DraftFileUpdateSerializer(data=data)
+    serializer.is_valid(raise_exception=True)
+    files_to_write = serializer.validated_data['files']
+    dependencies_to_write = serializer.validated_data['links']
+
+    draft_repo = DraftRepo(SnapshotRepo())
+    try:
+        draft_repo.update(draft_uuid, files_to_write, dependencies_to_write)
+    except LinkCycleError:
+        raise serializers.ValidationError("Link cycle detected: Cannot create draft.")
 
 
-def encode_str_for_draft(input_str):
+def _encode_str_for_draft(input_str):
     """
     Given a string, return UTF-8 representation that is then base64 encoded.
     """
-    if isinstance(input_str, six.text_type):
+    if isinstance(input_str, str):
         binary = input_str.encode('utf8')
     else:
         binary = input_str
